@@ -1,4 +1,4 @@
-package com.audioshow.ms
+package com.vegspro.aroundrecorder
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class RecordingService : Service() {
 
     companion object {
-        const val ACTION_START = "com.audioshow.ms.START"
-        const val ACTION_STOP = "com.audioshow.ms.STOP"
+        const val ACTION_START = "com.vegspro.aroundrecorder.START"
+        const val ACTION_STOP = "com.vegspro.aroundrecorder.STOP"
         const val NOTIFICATION_ID = 1001
         const val CHANNEL_ID = "recording_channel"
         const val SEGMENT_MS = 15 * 60 * 1000L
