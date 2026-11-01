@@ -1,4 +1,4 @@
-package com.vegspro.aroundrecorder
+package com.audioshow.ms
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -16,6 +16,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,11 +24,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class RecordingService : Service() {
 
     companion object {
-        const val ACTION_START = "com.vegspro.aroundrecorder.START"
-        const val ACTION_STOP = "com.vegspro.aroundrecorder.STOP"
+        const val ACTION_START = "com.audioshow.ms.START"
+        const val ACTION_STOP = "com.audioshow.ms.STOP"
         const val NOTIFICATION_ID = 1001
         const val CHANNEL_ID = "recording_channel"
-        const val SEGMENT_MS = 15 * 60 * 1000L // 15 minutes
+        const val SEGMENT_MS = 15 * 60 * 1000L
 
         @Volatile
         var isRunning = false
@@ -41,7 +42,10 @@ class RecordingService : Service() {
     private val isRecording = AtomicBoolean(false)
     private var segmentRunnable: Runnable? = null
 
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+    private val monthsRu = arrayOf(
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря"
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -49,7 +53,7 @@ class RecordingService : Service() {
         super.onCreate()
         createNotificationChannel()
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AroundRecorder::WakeLock").apply {
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioShow::WakeLock").apply {
             setReferenceCounted(false)
         }
     }
@@ -66,7 +70,7 @@ class RecordingService : Service() {
         if (isRecording.get()) return
         isRecording.set(true)
         isRunning = true
-        wakeLock?.acquire(24 * 60 * 60 * 1000L) // up to 24h, will re-acquire if needed
+        wakeLock?.acquire(24 * 60 * 60 * 1000L)
         startForeground(NOTIFICATION_ID, buildNotification("Запись началась…"))
         startNewSegment()
         scheduleNextSegment()
@@ -82,12 +86,23 @@ class RecordingService : Service() {
         stopSelf()
     }
 
+    /** Пример: "21:00 - 1 ноября 2026г.m4a" */
+    private fun makeFileName(start: Date = Date()): String {
+        val cal = Calendar.getInstance().apply { time = start }
+        val h = cal.get(Calendar.HOUR_OF_DAY)
+        val m = cal.get(Calendar.MINUTE)
+        val day = cal.get(Calendar.DAY_OF_MONTH)
+        val month = monthsRu[cal.get(Calendar.MONTH)]
+        val year = cal.get(Calendar.YEAR)
+        return "%02d:%02d - %d %s %dг.m4a".format(h, m, day, month, year)
+    }
+
     private fun startNewSegment() {
         stopCurrentRecorder()
         val dir = getRecordingsDir()
         if (!dir.exists()) dir.mkdirs()
 
-        val fileName = "rec_${dateFormat.format(Date())}.m4a"
+        val fileName = makeFileName()
         currentFile = File(dir, fileName)
 
         try {
@@ -138,7 +153,6 @@ class RecordingService : Service() {
     }
 
     private fun getRecordingsDir(): File {
-        // App-specific external storage — no special permission needed on modern Android
         val base = getExternalFilesDir(null) ?: filesDir
         return File(base, "AroundRecordings")
     }

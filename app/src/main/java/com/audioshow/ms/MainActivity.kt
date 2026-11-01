@@ -1,9 +1,10 @@
-package com.vegspro.aroundrecorder
+package com.audioshow.ms
 
 import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -41,25 +42,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        val allGranted = results.values.all { it }
-        if (allGranted) {
-            // ready
-        } else {
+        if (!results.values.all { it }) {
             Toast.makeText(this, "Нужны разрешения микрофона и уведомлений", Toast.LENGTH_LONG).show()
         }
     }
@@ -69,7 +65,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         requestNeededPermissions()
         setContent {
-            AroundRecorderTheme {
+            AudioShowTheme {
                 MainScreen()
             }
         }
@@ -90,7 +86,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AroundRecorderTheme(content: @Composable () -> Unit) {
+fun AudioShowTheme(content: @Composable () -> Unit) {
     val darkColors = darkColorScheme(
         primary = Color(0xFF7C9CFF),
         onPrimary = Color(0xFF0A0E21),
@@ -103,11 +99,7 @@ fun AroundRecorderTheme(content: @Composable () -> Unit) {
         onSurfaceVariant = Color(0xFFA0AEC0),
         error = Color(0xFFF87171)
     )
-    MaterialTheme(
-        colorScheme = darkColors,
-        typography = Typography(),
-        content = content
-    )
+    MaterialTheme(colorScheme = darkColors, content = content)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,17 +119,16 @@ fun MainScreen() {
     var isAnalyzing by remember { mutableStateOf(false) }
     var autoStart by remember { mutableStateOf(prefs.getBoolean("auto_start", false)) }
     var showBatteryDialog by remember { mutableStateOf(false) }
+    var playerFile by remember { mutableStateOf<File?>(null) }
 
     fun refreshList() {
         val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "AroundRecordings")
-        if (dir.exists()) {
-            recordings = dir.listFiles()
+        recordings = if (dir.exists()) {
+            dir.listFiles()
                 ?.filter { it.isFile && (it.name.endsWith(".m4a") || it.name.endsWith(".mp4")) }
                 ?.sortedByDescending { it.lastModified() }
                 ?: emptyList()
-        } else {
-            recordings = emptyList()
-        }
+        } else emptyList()
     }
 
     LaunchedEffect(Unit) {
@@ -154,7 +145,6 @@ fun MainScreen() {
         }
         ContextCompat.startForegroundService(context, intent)
         isRecording = true
-        // Prompt for battery optimization
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !pm.isIgnoringBatteryOptimizations(context.packageName)) {
             showBatteryDialog = true
@@ -174,9 +164,9 @@ fun MainScreen() {
             TopAppBar(
                 title = {
                     Column {
-                        Text("Around Recorder", fontWeight = FontWeight.Bold)
+                        Text("AudioShow", fontWeight = FontWeight.Bold)
                         Text(
-                            "24/7 запись окружения · отрывки 15 мин",
+                            "24/7 запись · отрывки 15 мин",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -190,9 +180,7 @@ fun MainScreen() {
                         Icon(Icons.Default.Refresh, contentDescription = "Обновить")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
             )
         },
         containerColor = MaterialTheme.colorScheme.background
@@ -203,7 +191,6 @@ fun MainScreen() {
                 .padding(padding)
                 .padding(horizontal = 16.dp)
         ) {
-            // Status card
             val statusColor by animateColorAsState(
                 if (isRecording) Color(0xFF4ADE80) else Color(0xFFF87171),
                 animationSpec = spring(stiffness = Spring.StiffnessLow),
@@ -252,9 +239,7 @@ fun MainScreen() {
                     Spacer(Modifier.height(16.dp))
                     Button(
                         onClick = { if (isRecording) stopService() else startService() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp),
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isRecording) Color(0xFFF87171) else Color(0xFF4ADE80),
@@ -276,7 +261,6 @@ fun MainScreen() {
 
             Spacer(Modifier.height(12.dp))
 
-            // Auto-start switch
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -305,32 +289,21 @@ fun MainScreen() {
 
             Spacer(Modifier.height(16.dp))
 
+            Text("Записи (${recordings.size})", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             Text(
-                "Записи (${recordings.size})",
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 16.sp
-            )
-            Text(
-                "Папка: Android/data/com.vegspro.aroundrecorder/files/AroundRecordings",
+                "Нажмите на запись, чтобы слушать / обрезать",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Spacer(Modifier.height(8.dp))
 
             if (recordings.isEmpty()) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        "Пока нет записей",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Пока нет записей", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 LazyColumn(
@@ -340,6 +313,7 @@ fun MainScreen() {
                     items(recordings, key = { it.absolutePath }) { file ->
                         RecordingItem(
                             file = file,
+                            onPlay = { playerFile = file },
                             onAnalyze = {
                                 if (apiKey.isBlank()) {
                                     showApiKeyDialog = true
@@ -372,7 +346,17 @@ fun MainScreen() {
         }
     }
 
-    // API Key dialog
+    // Player bottom sheet / dialog
+    playerFile?.let { file ->
+        PlayerDialog(
+            file = file,
+            onDismiss = { playerFile = null },
+            onSaved = {
+                Toast.makeText(context, "Сохранено: $it", Toast.LENGTH_LONG).show()
+            }
+        )
+    }
+
     if (showApiKeyDialog) {
         var tempKey by remember { mutableStateOf(apiKey) }
         AlertDialog(
@@ -381,7 +365,7 @@ fun MainScreen() {
             text = {
                 Column {
                     Text(
-                        "Получите бесплатный ключ на aistudio.google.com/apikey\n\nКлюч хранится только на устройстве.",
+                        "Получите бесплатный ключ на aistudio.google.com/apikey\nКлюч хранится только на устройстве.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(Modifier.height(12.dp))
@@ -407,7 +391,6 @@ fun MainScreen() {
         )
     }
 
-    // Battery optimization dialog
     if (showBatteryDialog) {
         AlertDialog(
             onDismissRequest = { showBatteryDialog = false },
@@ -434,7 +417,6 @@ fun MainScreen() {
         )
     }
 
-    // Analysis result dialog
     if (analyzingFile != null) {
         AlertDialog(
             onDismissRequest = {
@@ -445,11 +427,7 @@ fun MainScreen() {
                 }
             },
             title = {
-                Text(
-                    if (isAnalyzing) "Анализ…" else "Результат ИИ",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(if (isAnalyzing) "Анализ…" else "Результат ИИ")
             },
             text = {
                 when {
@@ -463,9 +441,7 @@ fun MainScreen() {
                     analysisError != null -> Text("Ошибка: $analysisError", color = MaterialTheme.colorScheme.error)
                     analysisResult != null -> {
                         LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
-                            item {
-                                Text(analysisResult!!, style = MaterialTheme.typography.bodyMedium)
-                            }
+                            item { Text(analysisResult!!, style = MaterialTheme.typography.bodyMedium) }
                         }
                     }
                 }
@@ -486,42 +462,40 @@ fun MainScreen() {
 @Composable
 fun RecordingItem(
     file: File,
+    onPlay: () -> Unit,
     onAnalyze: () -> Unit,
     onDelete: () -> Unit
 ) {
     val sizeMb = remember(file) { "%.1f МБ".format(file.length() / (1024.0 * 1024.0)) }
-    val timeStr = remember(file) {
-        SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(file.lastModified()))
-    }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onPlay() },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Default.AudioFile,
-                contentDescription = null,
+                Icons.Default.PlayCircle,
+                contentDescription = "Слушать",
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(40.dp)
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    file.name,
+                    file.nameWithoutExtension,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "$timeStr · $sizeMb",
+                    sizeMb,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -534,4 +508,196 @@ fun RecordingItem(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PlayerDialog(
+    file: File,
+    onDismiss: () -> Unit,
+    onSaved: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var durationMs by remember { mutableStateOf(0) }
+    var positionMs by remember { mutableStateOf(0) }
+    var trimStart by remember { mutableFloatStateOf(0f) }
+    var trimEnd by remember { mutableFloatStateOf(1f) }
+    var isSaving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(file) {
+        val mp = MediaPlayer().apply {
+            try {
+                setDataSource(file.absolutePath)
+                prepare()
+                durationMs = duration
+                trimEnd = 1f
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        player = mp
+        onDispose {
+            try {
+                mp.stop()
+                mp.release()
+            } catch (_: Exception) {
+            }
+            player = null
+        }
+    }
+
+    // position ticker
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            positionMs = player?.currentPosition ?: 0
+            delay(200)
+            if ((player?.currentPosition ?: 0) >= (player?.duration ?: 0)) {
+                isPlaying = false
+                player?.seekTo(0)
+                positionMs = 0
+            }
+        }
+    }
+
+    fun formatTime(ms: Int): String {
+        val m = TimeUnit.MILLISECONDS.toMinutes(ms.toLong())
+        val s = TimeUnit.MILLISECONDS.toSeconds(ms.toLong()) % 60
+        return "%d:%02d".format(m, s)
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            player?.pause()
+            onDismiss()
+        },
+        title = {
+            Text(
+                file.nameWithoutExtension,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 16.sp
+            )
+        },
+        text = {
+            Column {
+                // Play controls
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    IconButton(onClick = {
+                        val mp = player ?: return@IconButton
+                        if (isPlaying) {
+                            mp.pause()
+                            isPlaying = false
+                        } else {
+                            // start from trim start if near beginning
+                            if (positionMs < (trimStart * durationMs).toInt() + 500) {
+                                mp.seekTo((trimStart * durationMs).toInt())
+                            }
+                            mp.start()
+                            isPlaying = true
+                        }
+                    }) {
+                        Icon(
+                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Slider(
+                            value = if (durationMs > 0) positionMs.toFloat() / durationMs else 0f,
+                            onValueChange = {
+                                val pos = (it * durationMs).toInt()
+                                player?.seekTo(pos)
+                                positionMs = pos
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(formatTime(positionMs), style = MaterialTheme.typography.bodySmall)
+                            Text(formatTime(durationMs), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Text("Обрезка", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Начало: ${formatTime((trimStart * durationMs).toInt())}  →  Конец: ${formatTime((trimEnd * durationMs).toInt())}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                // Range-like dual slider approximation
+                Text("Начало", style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = trimStart,
+                    onValueChange = { v ->
+                        trimStart = v.coerceAtMost(trimEnd - 0.02f)
+                    },
+                    valueRange = 0f..1f
+                )
+                Text("Конец", style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = trimEnd,
+                    onValueChange = { v ->
+                        trimEnd = v.coerceAtLeast(trimStart + 0.02f)
+                    },
+                    valueRange = 0f..1f
+                )
+
+                if (saveError != null) {
+                    Text(saveError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isSaving) return@Button
+                    isSaving = true
+                    saveError = null
+                    scope.launch {
+                        val startMs = (trimStart * durationMs).toLong()
+                        val endMs = (trimEnd * durationMs).toLong()
+                        val outName = file.nameWithoutExtension + "_cut"
+                        val result = withContext(Dispatchers.IO) {
+                            AudioTrimmer.trimAndSave(context, file, startMs, endMs, outName)
+                        }
+                        isSaving = false
+                        result.fold(
+                            onSuccess = {
+                                onSaved(it)
+                                player?.pause()
+                                onDismiss()
+                            },
+                            onFailure = { saveError = it.message }
+                        )
+                    }
+                },
+                enabled = !isSaving && durationMs > 0
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text("Сохранить в Download/AudioShow")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                player?.pause()
+                onDismiss()
+            }) { Text("Закрыть") }
+        }
+    )
 }
