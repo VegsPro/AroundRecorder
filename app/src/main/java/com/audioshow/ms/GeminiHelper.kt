@@ -67,10 +67,11 @@ object GeminiHelper {
             }.toString()
 
             val models = listOf(
+                "gemini-3.8-flash",
+                "gemini-2.5-flash",
                 "gemini-2.0-flash",
                 "gemini-1.5-flash",
-                "gemini-1.5-flash-latest",
-                "gemini-2.5-flash"
+                "gemini-1.5-flash-latest"
             )
 
             val errors = mutableListOf<String>()
@@ -92,7 +93,7 @@ object GeminiHelper {
             }
 
             // Strategy C: Vertex Express (AQ keys often belong here)
-            for (model in listOf("gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash")) {
+            for (model in listOf("gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash")) {
                 val url = "https://aiplatform.googleapis.com/v1/publishers/google/models/$model:generateContent?key=$key"
                 val result = post(url, bodyJson, headerKey = null)
                 if (result.isSuccess) return result
