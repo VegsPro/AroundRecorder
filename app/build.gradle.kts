@@ -5,33 +5,20 @@ plugins {
 }
 
 android {
-    namespace = "com.vegspro.aroundrecorder"
+    namespace = "com.audioshow.ms"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.vegspro.aroundrecorder"
+        applicationId = "com.audioshow.ms"
         minSdk = 26
         targetSdk = 35
         versionCode = 4
-        versionName = "1.2.1"
-    }
-
-    signingConfigs {
-        create("stable") {
-            storeFile = file("audioshow.keystore")
-            storePassword = "audioshow"
-            keyAlias = "audioshow"
-            keyPassword = "audioshow"
-        }
+        versionName = "1.3.0"
     }
 
     buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("stable")
-        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("stable")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
