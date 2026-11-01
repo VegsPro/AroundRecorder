@@ -5,20 +5,22 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import java.io.File
-import java.text.SimpleDateFormat
+import java.io.FileInputStream
 import java.util.Calendar
 import java.util.Date
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class RecordingService : Service() {
@@ -37,6 +39,7 @@ class RecordingService : Service() {
 
     private var mediaRecorder: MediaRecorder? = null
     private var currentFile: File? = null
+    private var segmentStartedAt: Long = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
     private val isRecording = AtomicBoolean(false)
@@ -70,23 +73,41 @@ class RecordingService : Service() {
         if (isRecording.get()) return
         isRecording.set(true)
         isRunning = true
-        wakeLock?.acquire(24 * 60 * 60 * 1000L)
+        try {
+            wakeLock?.acquire(24 * 60 * 60 * 1000L)
+        } catch (_: Exception) {
+        }
         startForeground(NOTIFICATION_ID, buildNotification("Запись началась…"))
-        startNewSegment()
-        scheduleNextSegment()
+        val ok = startNewSegment()
+        if (ok) {
+            scheduleNextSegment()
+        } else {
+            // failed to start — stop cleanly
+            isRecording.set(false)
+            isRunning = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun stopRecording() {
         isRecording.set(false)
         isRunning = false
         segmentRunnable?.let { handler.removeCallbacks(it) }
-        stopCurrentRecorder()
-        wakeLock?.let { if (it.isHeld) it.release() }
+        // Finalize current segment — file will contain everything recorded so far
+        finalizeCurrentSegment()
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    /** Пример: "21:00 - 1 ноября 2026г.m4a" */
+    /**
+     * Safe filename without ':' or other illegal chars.
+     * Example: "14-33 - 1 ноября 2026г.m4a"
+     */
     private fun makeFileName(start: Date = Date()): String {
         val cal = Calendar.getInstance().apply { time = start }
         val h = cal.get(Calendar.HOUR_OF_DAY)
@@ -94,52 +115,123 @@ class RecordingService : Service() {
         val day = cal.get(Calendar.DAY_OF_MONTH)
         val month = monthsRu[cal.get(Calendar.MONTH)]
         val year = cal.get(Calendar.YEAR)
-        return "%02d:%02d - %d %s %dг.m4a".format(h, m, day, month, year)
+        // Use hyphen instead of colon — colon breaks MediaRecorder / filesystem
+        return "%02d-%02d - %d %s %dг.m4a".format(h, m, day, month, year)
     }
 
-    private fun startNewSegment() {
-        stopCurrentRecorder()
+    /** @return true if recording started successfully */
+    private fun startNewSegment(): Boolean {
+        // Finalize previous segment first (so it is not empty)
+        finalizeCurrentSegment()
+
         val dir = getRecordingsDir()
-        if (!dir.exists()) dir.mkdirs()
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
 
         val fileName = makeFileName()
-        currentFile = File(dir, fileName)
+        val file = File(dir, fileName)
+        currentFile = file
+        segmentStartedAt = System.currentTimeMillis()
 
-        try {
-            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        return try {
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(this)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
-            }.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(128000)
-                setAudioSamplingRate(44100)
-                setOutputFile(currentFile!!.absolutePath)
-                prepare()
-                start()
             }
-            updateNotification("Идёт запись: ${currentFile!!.name}")
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(128000)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setOutputFile(file.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            mediaRecorder = recorder
+            updateNotification("Идёт запись: ${file.name}")
+            true
         } catch (e: Exception) {
             e.printStackTrace()
+            mediaRecorder = null
+            // remove empty broken file
+            try { if (file.exists() && file.length() == 0L) file.delete() } catch (_: Exception) {}
+            currentFile = null
             updateNotification("Ошибка записи: ${e.message}")
-            isRecording.set(false)
-            isRunning = false
+            false
         }
     }
 
-    private fun stopCurrentRecorder() {
+    /**
+     * Stop MediaRecorder so the file is finalized with all audio recorded so far.
+     * Then copy a public copy into Download/AudioShow.
+     */
+    private fun finalizeCurrentSegment() {
+        val file = currentFile
+        val recorder = mediaRecorder
+        mediaRecorder = null
+        currentFile = null
+
+        if (recorder == null) return
+
         try {
-            mediaRecorder?.apply {
-                stop()
-                reset()
-                release()
-            }
+            recorder.stop()
+        } catch (_: Exception) {
+            // stop can throw if nothing was recorded yet
+        }
+        try {
+            recorder.reset()
         } catch (_: Exception) {
         }
-        mediaRecorder = null
+        try {
+            recorder.release()
+        } catch (_: Exception) {
+        }
+
+        if (file == null) return
+
+        // Delete empty / tiny broken files (< 1 KB)
+        if (!file.exists() || file.length() < 1024) {
+            try { file.delete() } catch (_: Exception) {}
+            return
+        }
+
+        // Copy to public Download/AudioShow so user can see files in Downloads
+        copyToPublicDownloads(file)
+    }
+
+    private fun copyToPublicDownloads(source: File) {
+        try {
+            val name = source.name
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "audio/mp4")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AudioShow")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val resolver = contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+                resolver.openOutputStream(uri)?.use { out ->
+                    FileInputStream(source).use { inp -> inp.copyTo(out) }
+                }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "AudioShow"
+                )
+                if (!dir.exists()) dir.mkdirs()
+                val dest = File(dir, name)
+                source.copyTo(dest, overwrite = true)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun scheduleNextSegment() {
@@ -203,7 +295,9 @@ class RecordingService : Service() {
     }
 
     override fun onDestroy() {
-        stopRecording()
+        if (isRecording.get()) {
+            stopRecording()
+        }
         super.onDestroy()
     }
 }
