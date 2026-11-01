@@ -47,6 +47,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -102,6 +105,41 @@ fun AudioShowTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColors, content = content)
 }
 
+/** Ключ дня: yyyy-MM-dd */
+private fun dayKey(ms: Long): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    return sdf.format(Date(ms))
+}
+
+/** Заголовок как в Chrome: «Сегодня», «Вчера», «1 ноября 2026 г.» */
+private fun dayTitle(key: String): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    val date = try { sdf.parse(key) } catch (_: Exception) { return key } ?: return key
+
+    val cal = Calendar.getInstance().apply { time = date }
+    val today = Calendar.getInstance()
+    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+
+    fun sameDay(a: Calendar, b: Calendar) =
+        a.get(Calendar.YEAR) == b.get(Calendar.YEAR) &&
+        a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
+
+    return when {
+        sameDay(cal, today) -> "Сегодня"
+        sameDay(cal, yesterday) -> "Вчера"
+        else -> {
+            val months = arrayOf(
+                "января", "февраля", "марта", "апреля", "мая", "июня",
+                "июля", "августа", "сентября", "октября", "ноября", "декабря"
+            )
+            val day = cal.get(Calendar.DAY_OF_MONTH)
+            val month = months[cal.get(Calendar.MONTH)]
+            val year = cal.get(Calendar.YEAR)
+            "$day $month $year г."
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
@@ -121,6 +159,10 @@ fun MainScreen() {
     var showBatteryDialog by remember { mutableStateOf(false) }
     var playerFile by remember { mutableStateOf<File?>(null) }
 
+    // Date filter: null = show all
+    var filterDayKey by remember { mutableStateOf<String?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
     fun refreshList() {
         val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "AroundRecordings")
         recordings = if (dir.exists()) {
@@ -137,6 +179,18 @@ fun MainScreen() {
             refreshList()
             delay(2000)
         }
+    }
+
+    val filtered = remember(recordings, filterDayKey) {
+        if (filterDayKey == null) recordings
+        else recordings.filter { dayKey(it.lastModified()) == filterDayKey }
+    }
+
+    // Group by day (newest first)
+    val grouped = remember(filtered) {
+        filtered.groupBy { dayKey(it.lastModified()) }
+            .toList()
+            .sortedByDescending { it.first }
     }
 
     fun startService() {
@@ -173,6 +227,9 @@ fun MainScreen() {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showDatePicker = true }) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "Поиск по дате")
+                    }
                     IconButton(onClick = { showApiKeyDialog = true }) {
                         Icon(Icons.Default.Key, contentDescription = "API ключ Gemini")
                     }
@@ -287,66 +344,145 @@ fun MainScreen() {
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-            Text("Записи (${recordings.size})", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-            Text(
-                "Нажмите на запись, чтобы слушать / обрезать",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // Filter chip / header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (filterDayKey != null) dayTitle(filterDayKey!!) else "Все записи (${recordings.size})",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp
+                    )
+                    if (filterDayKey != null) {
+                        Text(
+                            "${filtered.size} файл(ов) · нажмите ✕ чтобы сбросить",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "Нажмите на запись, чтобы слушать / обрезать",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (filterDayKey != null) {
+                    IconButton(onClick = { filterDayKey = null }) {
+                        Icon(Icons.Default.Close, contentDescription = "Сбросить фильтр")
+                    }
+                } else {
+                    IconButton(onClick = { showDatePicker = true }) {
+                        Icon(Icons.Default.DateRange, contentDescription = "Выбрать дату")
+                    }
+                }
+            }
 
             Spacer(Modifier.height(8.dp))
 
-            if (recordings.isEmpty()) {
+            if (filtered.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("Пока нет записей", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (filterDayKey != null) "Нет записей за этот день"
+                        else "Пока нет записей",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(recordings, key = { it.absolutePath }) { file ->
-                        RecordingItem(
-                            file = file,
-                            onPlay = { playerFile = file },
-                            onAnalyze = {
-                                if (apiKey.isBlank()) {
-                                    showApiKeyDialog = true
-                                    Toast.makeText(context, "Сначала введите API-ключ Gemini", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    analyzingFile = file
-                                    isAnalyzing = true
-                                    analysisResult = null
-                                    analysisError = null
-                                    scope.launch {
-                                        val result = withContext(Dispatchers.IO) {
-                                            GeminiHelper.analyzeAudio(apiKey, file)
+                    grouped.forEach { (key, files) ->
+                        item(key = "header_$key") {
+                            Text(
+                                text = dayTitle(key),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp, bottom = 6.dp, start = 4.dp)
+                            )
+                        }
+                        items(files, key = { it.absolutePath }) { file ->
+                            RecordingItem(
+                                file = file,
+                                onPlay = { playerFile = file },
+                                onAnalyze = {
+                                    if (apiKey.isBlank()) {
+                                        showApiKeyDialog = true
+                                        Toast.makeText(context, "Сначала введите API-ключ Gemini", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        analyzingFile = file
+                                        isAnalyzing = true
+                                        analysisResult = null
+                                        analysisError = null
+                                        scope.launch {
+                                            val result = withContext(Dispatchers.IO) {
+                                                GeminiHelper.analyzeAudio(apiKey, file)
+                                            }
+                                            isAnalyzing = false
+                                            result.fold(
+                                                onSuccess = { analysisResult = it },
+                                                onFailure = { analysisError = it.message }
+                                            )
                                         }
-                                        isAnalyzing = false
-                                        result.fold(
-                                            onSuccess = { analysisResult = it },
-                                            onFailure = { analysisError = it.message }
-                                        )
                                     }
+                                },
+                                onDelete = {
+                                    file.delete()
+                                    refreshList()
                                 }
-                            },
-                            onDelete = {
-                                file.delete()
-                                refreshList()
-                            }
-                        )
+                            )
+                        }
                     }
+                    item { Spacer(Modifier.height(24.dp)) }
                 }
             }
         }
     }
 
-    // Player bottom sheet / dialog
+    // Date picker
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = System.currentTimeMillis()
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    val millis = datePickerState.selectedDateMillis
+                    if (millis != null) {
+                        // DatePicker returns UTC midnight — convert carefully
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = millis
+                            // normalize to local day
+                        }
+                        filterDayKey = dayKey(cal.timeInMillis)
+                    }
+                    showDatePicker = false
+                }) { Text("Выбрать") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    filterDayKey = null
+                    showDatePicker = false
+                }) { Text("Все даты") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
     playerFile?.let { file ->
         PlayerDialog(
             file = file,
@@ -467,6 +603,9 @@ fun RecordingItem(
     onDelete: () -> Unit
 ) {
     val sizeMb = remember(file) { "%.1f МБ".format(file.length() / (1024.0 * 1024.0)) }
+    val timeStr = remember(file) {
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(file.lastModified()))
+    }
 
     Card(
         modifier = Modifier
@@ -495,7 +634,7 @@ fun RecordingItem(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    sizeMb,
+                    "$timeStr · $sizeMb",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -551,7 +690,6 @@ fun PlayerDialog(
         }
     }
 
-    // position ticker
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             positionMs = player?.currentPosition ?: 0
@@ -585,7 +723,6 @@ fun PlayerDialog(
         },
         text = {
             Column {
-                // Play controls
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
@@ -596,7 +733,6 @@ fun PlayerDialog(
                             mp.pause()
                             isPlaying = false
                         } else {
-                            // start from trim start if near beginning
                             if (positionMs < (trimStart * durationMs).toInt() + 500) {
                                 mp.seekTo((trimStart * durationMs).toInt())
                             }
@@ -637,21 +773,16 @@ fun PlayerDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // Range-like dual slider approximation
                 Text("Начало", style = MaterialTheme.typography.labelSmall)
                 Slider(
                     value = trimStart,
-                    onValueChange = { v ->
-                        trimStart = v.coerceAtMost(trimEnd - 0.02f)
-                    },
+                    onValueChange = { v -> trimStart = v.coerceAtMost(trimEnd - 0.02f) },
                     valueRange = 0f..1f
                 )
                 Text("Конец", style = MaterialTheme.typography.labelSmall)
                 Slider(
                     value = trimEnd,
-                    onValueChange = { v ->
-                        trimEnd = v.coerceAtLeast(trimStart + 0.02f)
-                    },
+                    onValueChange = { v -> trimEnd = v.coerceAtLeast(trimStart + 0.02f) },
                     valueRange = 0f..1f
                 )
 
