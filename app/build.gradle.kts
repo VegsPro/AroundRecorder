@@ -12,13 +12,26 @@ android {
         applicationId = "com.vegspro.aroundrecorder"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.2.1"
+    }
+
+    signingConfigs {
+        create("stable") {
+            storeFile = file("audioshow.keystore")
+            storePassword = "audioshow"
+            keyAlias = "audioshow"
+            keyPassword = "audioshow"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("stable")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
